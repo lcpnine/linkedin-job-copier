@@ -41,6 +41,11 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.header__logo img {
+  display: block;
+  border-radius: 7px;
+}
+
 .header__title {
   font-size: 15px;
   font-weight: 600;

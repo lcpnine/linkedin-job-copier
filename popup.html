@@ -11,11 +11,7 @@
     <!-- Header -->
     <header class="header">
       <div class="header__logo">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="2" width="20" height="20" rx="4" fill="#0a66c2"/>
-          <path d="M7 10h10M7 14h7" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
-          <rect x="15" y="12" width="4" height="4" rx="1" fill="#fff" opacity="0.9"/>
-        </svg>
+        <img src="icons/icon48.png" alt="" width="32" height="32" />
       </div>
       <div class="header__text">
         <h1 class="header__title">Job Copier</h1>
@@ -56,12 +52,13 @@
       <section class="section">
         <div class="section__head">
           <span class="section__label">Jobs on This Page</span>
-          <button id="scrapeListBtn" class="btn btn--sm btn--outline">Scrape List</button>
+          <button id="scrapeListBtn" class="btn btn--sm btn--outline">Extract Visible Jobs</button>
         </div>
 
         <div id="jobListState" class="list-empty">
-          <p>Click "Scrape List" to extract all job cards visible on this page.</p>
+          <p>Wait for the jobs you want to appear, then click Extract Visible Jobs.</p>
         </div>
+        <p id="extractionResult" class="list-empty" role="status" aria-live="polite" hidden></p>
 
         <div id="jobList" class="job-list" hidden></div>
 
@@ -74,7 +71,7 @@
 
     <!-- Footer -->
     <footer class="footer">
-      Works on Chromium browsers · Brave · Edge · Arc
+      <span id="extensionVersion"></span> · Works on Chromium browsers · Brave · Edge · Arc
     </footer>
   </div>
 

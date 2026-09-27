@@ -8,7 +8,7 @@ A browser extension that adds a **"Copy Job Description"** button to LinkedIn jo
 
 - **📋 Copy Job Description** — One-click copy of the full job description (title, company, location, URL + description) to clipboard, formatted cleanly for sharing with people or LLMs
 - **Copy Summary** — Copies just the title, company, location & URL (no description)
-- **Scrape Job List** — Extracts all job cards visible on a LinkedIn jobs search page
+- **Extract Visible Jobs** — Extracts unique job cards already rendered on a LinkedIn jobs search page
 - **Copy All as Text** — Copies the entire scraped list as formatted text
 - **⬇ Export CSV** — Downloads all scraped jobs as a `.csv` file
 
@@ -46,10 +46,10 @@ OR:
 2. The popup shows the currently selected job
 3. Click **"Copy Job Description"** or **"Copy Summary"**
 
-### Scrape All Jobs on a Search Page
+### Extract Visible Jobs on a Search Page
 1. Go to LinkedIn Jobs search results (`linkedin.com/jobs/search/...`)
 2. Click the extension icon
-3. Click **"Scrape List"** — all visible job cards are extracted
+3. Wait for the jobs you want to render, then click **"Extract Visible Jobs"**
 4. Click **"Copy All as Text"** or **"⬇ Export CSV"**
 
 ---
@@ -73,7 +73,9 @@ This extension uses the standard **WebExtensions API (Manifest V3)** which is su
 
 ## ⚠️ Notes
 
-- LinkedIn periodically updates their page structure (CSS class names). If the button stops appearing or scraping breaks, the selectors in `content.js` may need updating.
+- Bulk extraction collects the job IDs of the cards currently in the DOM, then reads each job's title, company, location and full description from LinkedIn's public job-posting page (`/jobs-guest/jobs/api/jobPosting/{JOB_ID}`), 3 at a time. It does not scroll, paginate, or discover additional jobs. Progress continues if you close the popup; reopen it to see the result, or press **Stop**. Jobs that can't be read (for example when LinkedIn rate-limits) keep whatever the card showed.
+- The CSV columns are `jobId,title,company,location,jobUrl,aboutTheJob`.
+- LinkedIn periodically updates its page structure. If extraction breaks, the structural selectors in `content.js` may need updating.
 - The extension only activates on `linkedin.com/jobs/*` pages.
 - No data is sent anywhere — everything runs locally in your browser.
 

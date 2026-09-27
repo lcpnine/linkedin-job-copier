@@ -1,8 +1,8 @@
 (function () {
   'use strict';
 
-  if (window.__ljcInjected) return;
-  window.__ljcInjected = true;
+  if (window.__ljcInjectedVersion === 3) return;
+  window.__ljcInjectedVersion = 3;
 
   const BUTTON_ID = 'ljc-copy-btn';
   const TOAST_ID  = 'ljc-toast';
@@ -229,7 +229,7 @@
 
   // ─── Message listener ──────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.action === 'scrapeCurrentJob') {
+    if (msg.action === 'scrapeCurrentJobV2') {
       sendResponse({
         title:       findJobTitleEl()?.innerText?.trim()                || 'N/A',
         company:     findCompanyEl()?.innerText?.trim()                 || 'N/A',
@@ -239,59 +239,202 @@
         fullText:    buildClipboardText()
       });
     }
-    if (msg.action === 'scrapeJobList') {
+    if (msg.action === 'scrapeJobCardsV2') {
       sendResponse({ jobs: scrapeJobList() });
+    }
+    if (msg.action === 'startBulkExtractV2') sendResponse(startBulkExtract());
+    if (msg.action === 'bulkStatusV2') sendResponse(bulkStatus());
+    if (msg.action === 'cancelBulkV2') {
+      if (bulkRun?.state === 'running') bulkRun.state = 'cancelled';
+      sendResponse(bulkStatus());
     }
     return true;
   });
 
   // ─── Scrape job list ───────────────────────────────────────────────────────
   function scrapeJobList() {
-    const cards = document.querySelectorAll('[data-occludable-job-id], [data-job-id]');
-    const seen = new Set();
-    const results = [];
+    const cardsById = new Map();
+    for (const card of document.querySelectorAll('[componentkey^="job-card-component-ref-"]')) {
+      const match = /^job-card-component-ref-(\d+)$/.exec(card.getAttribute('componentkey') || '');
+      if (!match) continue;
+      const jobId = match[1];
+      if (!cardsById.has(jobId)) cardsById.set(jobId, []);
+      cardsById.get(jobId).push(card);
+    }
 
-    cards.forEach(card => {
-      const jobId = card.dataset.occludableJobId || card.dataset.jobId;
-      if (!jobId || seen.has(jobId)) return;
-      seen.add(jobId);
+    return [...cardsById].map(([jobId, elements]) => {
+      // LinkedIn can put the key on a nested element while the company and
+      // location are siblings. Climb to its card container, stopping before
+      // the parent would include a different job's component key.
+      const cards = [...new Set(elements.map(el => cardRootForId(el, jobId)))];
+      const jobLink = cards.flatMap(card => [
+        ...(card.matches('a[href*="/jobs/view/"]') ? [card] : []),
+        ...card.querySelectorAll('a[href*="/jobs/view/"]')
+      ])
+        .find(link => jobUrlForId(link.getAttribute('href'), jobId));
+      const title = firstCardText(cards, ['[data-testid*="job-title"]'])
+        || firstLine(jobLink?.querySelector('h3')?.innerText)
+        || firstLine(jobLink?.querySelector('h4')?.innerText)
+        || firstLine(jobLink?.innerText)
+        || jobLink?.getAttribute('aria-label')?.trim()
+        || firstCardText(cards, ['h3', 'h4']);
+      const company = firstCardText(cards, [
+        'a[href*="/company/"]',
+        '[data-testid*="company"]',
+        '[aria-label^="Company:"]'
+      ]);
+      const location = firstCardText(cards, [
+        '[data-testid*="location"]',
+        '[itemprop="jobLocation"]',
+        '[aria-label^="Location:"]'
+      ]);
+      const lines = cards.flatMap(card => (card.innerText || '').split('\n').map(line => line.trim()).filter(Boolean));
+      const titleIndex = lines.indexOf(title);
+      const following = titleIndex >= 0 ? lines.slice(titleIndex + 1) : [];
+      const cardCompany = company || following[0] || '';
+      const companyIndex = following.indexOf(cardCompany);
+      const about = document.getElementById(`JobDetails_AboutTheJob_${jobId}`)
+        ?.querySelector('[data-testid="expandable-text-box"]')?.innerText?.trim() || '';
 
-      const title = card.querySelector([
-        '.job-card-list__title--link',
-        '.job-card-list__title',
-        '.job-card-container__link strong',
-        'a[class*="job-card"] strong',
-        '[class*="job-title"]'
-      ].join(', '))?.innerText?.trim()
-        || card.getAttribute('aria-label')?.trim()
-        || '';
-
-      const company = card.querySelector([
-        '.job-card-container__company-name',
-        '.job-card-container__primary-description',
-        '.artdeco-entity-lockup__subtitle',
-        '[class*="company-name"]',
-        '[class*="subtitle"]'
-      ].join(', '))?.innerText?.trim() || '';
-
-      const location = card.querySelector([
-        '.job-card-container__metadata-item',
-        '[class*="metadata-item"]',
-        '[class*="location"]'
-      ].join(', '))?.innerText?.trim() || '';
-
-      const url = `https://www.linkedin.com/jobs/view/${jobId}/`;
-
-      results.push({
-        title:   title   || `Job #${jobId}`,
-        company: company || '—',
-        location,
-        url,
-        jobId
-      });
+      return {
+        jobId,
+        title: title || `Job #${jobId}`,
+        company: cardCompany,
+        location: location || (companyIndex >= 0 ? following[companyIndex + 1] : '') || '',
+        jobUrl: jobUrlForId(jobLink?.getAttribute('href'), jobId) || `https://www.linkedin.com/jobs/view/${jobId}/`,
+        aboutTheJob: about
+      };
     });
+  }
 
-    return results;
+  function cardRootForId(element, jobId) {
+    let root = element;
+    while (root.parentElement && root.parentElement !== document.body) {
+      const parent = root.parentElement;
+      const containsAnotherJob = [...parent.querySelectorAll('[componentkey^="job-card-component-ref-"]')]
+        .some(el => {
+          const match = /^job-card-component-ref-(\d+)$/.exec(el.getAttribute('componentkey') || '');
+          return match && match[1] !== jobId;
+        });
+      if (containsAnotherJob) break;
+      root = parent;
+      if (root.matches('li') || root.matches('[role="listitem"]')) break;
+    }
+    return root;
+  }
+
+  function firstLine(value) {
+    return (value || '').split('\n').map(line => line.trim()).find(Boolean) || '';
+  }
+
+  function firstCardText(cards, selectors) {
+    for (const selector of selectors) {
+      for (const card of cards) {
+        const el = card.querySelector(selector);
+        const value = firstLine(el?.innerText) || el?.getAttribute('aria-label')?.replace(/^[^:]+:\s*/, '').trim();
+        if (value) return value;
+      }
+    }
+    return '';
+  }
+
+  function jobUrlForId(href, jobId) {
+    if (!href) return '';
+    try {
+      const url = new URL(href, 'https://www.linkedin.com');
+      return url.protocol === 'https:' && (url.hostname === 'linkedin.com' || url.hostname.endsWith('.linkedin.com'))
+        && url.pathname.match(/^\/jobs\/view\/(\d+)\/?$/)?.[1] === jobId
+        ? `${url.origin}/jobs/view/${jobId}/` : '';
+    } catch { return ''; }
+  }
+
+  // ─── Bulk job details ──────────────────────────────────────────────────────
+  // Search-result cards often lack readable text, so each job's title, company,
+  // location and description come from LinkedIn's public job-posting endpoint.
+  // This runs in the page rather than the popup so closing the popup does not
+  // stop it; the popup polls bulkStatus().
+  const DETAIL_CONCURRENCY = 3;
+  const DETAIL_TIMEOUT_MS  = 10000;
+  const DETAIL_RETRIES     = 3;
+  let bulkRun = null;
+
+  function bulkStatus() {
+    if (!bulkRun) return { state: 'idle' };
+    const { state, done, jobs, failures } = bulkRun;
+    return { state, done, total: jobs.length, jobs, failures: [...failures] };
+  }
+
+  function startBulkExtract() {
+    if (bulkRun?.state === 'running') return bulkStatus();
+    const run = { state: 'running', done: 0, jobs: scrapeJobList(), failures: [] };
+    bulkRun = run;
+    fillJobDetails(run).then(() => { if (run.state === 'running') run.state = 'done'; });
+    return bulkStatus();
+  }
+
+  async function fillJobDetails(run) {
+    let next = 0;
+    async function worker() {
+      while (run.state === 'running' && next < run.jobs.length) {
+        const job = run.jobs[next++];
+        try {
+          const fields = await fetchJobDetails(job.jobId, run);
+          job.title    = fields.title    || job.title;
+          job.company  = fields.company  || job.company;
+          job.location = fields.location || job.location;
+          if (fields.aboutTheJob.length > job.aboutTheJob.length) job.aboutTheJob = fields.aboutTheJob;
+        } catch (error) {
+          if (run.state === 'running') run.failures.push(`${job.jobId}: ${error.message || 'Request failed'}`);
+        }
+        run.done++;
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(DETAIL_CONCURRENCY, run.jobs.length) }, worker));
+  }
+
+  async function fetchJobDetails(jobId, run) {
+    for (let attempt = 0; ; attempt++) {
+      const controller = new AbortController();
+      const deadline = setTimeout(() => controller.abort(), DETAIL_TIMEOUT_MS);
+      try {
+        const response = await fetch(`${location.origin}/jobs-guest/jobs/api/jobPosting/${jobId}`, {
+          credentials: 'omit', signal: controller.signal
+        });
+        if (response.status === 429 && attempt < DETAIL_RETRIES && run.state === 'running') {
+          await new Promise(resolve => setTimeout(resolve, 2000 * 2 ** attempt));
+          continue;
+        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        // Collapse source-formatting whitespace so only <br>/block breaks remain.
+        const html = (await response.text()).replace(/\s+/g, ' ');
+        const fields = parseJobDetails(new DOMParser().parseFromString(html, 'text/html'));
+        if (!fields.title && !fields.aboutTheJob) throw new Error('No job details in response');
+        return fields;
+      } catch (error) {
+        throw error.name === 'AbortError' ? new Error('Timed out') : error;
+      } finally {
+        clearTimeout(deadline);
+      }
+    }
+  }
+
+  function parseJobDetails(doc) {
+    const text = selector => doc.querySelector(selector)?.textContent.replace(/\s+/g, ' ').trim() || '';
+    return {
+      title:       text('.top-card-layout__title'),
+      company:     text('.topcard__org-name-link'),
+      location:    text('.topcard__flavor--bullet:not(.topcard__flavor--metadata)'),
+      aboutTheJob: blockText(doc.querySelector('.show-more-less-html__markup'))
+    };
+  }
+
+  function blockText(element) {
+    if (!element) return '';
+    const clone = element.cloneNode(true);
+    clone.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+    clone.querySelectorAll('li').forEach(li => { li.prepend('• '); li.append('\n'); });
+    clone.querySelectorAll('p, ul, ol, h1, h2, h3, h4, h5, h6, div').forEach(block => block.append('\n'));
+    return clone.textContent.split('\n').map(line => line.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim();
   }
 
 })();
