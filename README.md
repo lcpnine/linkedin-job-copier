@@ -2,6 +2,8 @@
 
 A browser extension that adds a **"Copy Job Description"** button to LinkedIn job listings, and lets you scrape & export all job cards from a search results page.
 
+> This is a fork of [PavanBJ/linkedin-job-copier](https://github.com/PavanBJ/linkedin-job-copier), with a reworked bulk-extraction flow and a test suite added.
+
 ---
 
 ## ✨ Features
@@ -81,15 +83,6 @@ This extension uses the standard **WebExtensions API (Manifest V3)** which is su
 
 ---
 
-
-## ☕ Support
-
-If this extension saved you some time or made your job hunt a little easier, I'd love a coffee! 
-
-[☕ Buy me a coffee on Topmate](https://topmate.io/pavan_bj/2023152)
-
----
-
 ## 📁 File Structure
 
 ```
@@ -100,6 +93,7 @@ linkedin-job-copier/
 ├── popup.html         # Extension popup UI
 ├── popup.css          # Popup styles
 ├── popup.js           # Popup logic
+├── test/              # Test suite
 └── icons/
     ├── icon16.png
     ├── icon48.png
