@@ -6,9 +6,10 @@ const vm = require('node:vm');
 
 const root = path.resolve(__dirname, '..');
 
-function element(tag, attrs = {}, text = '', children = []) {
+function element(tag, attrs = {}, text = '', children = [], onClick) {
   const node = {
-    tagName: tag.toUpperCase(), attrs, text, children,
+    tagName: tag.toUpperCase(), attrs, text, children, className: attrs.class || '', disabled: false,
+    click() { onClick?.(); },
     get innerText() { return this.text || this.children.map(child => child.innerText).filter(Boolean).join('\n'); },
     get textContent() { return this.text || this.children.map(child => child.textContent).join(''); },
     get nextElementSibling() {
@@ -47,7 +48,8 @@ function detailDocument(html) {
   const id = html.trim();
   const fields = {
     4463260097: { title: 'Backend Engineer', company: 'IKEA', location: 'Amsterdam', about: 'Line 1, "quoted"\nLine 2\nFull ending' },
-    4463260098: { title: 'Designer II', company: 'Beta', location: 'London', about: 'Public line 1\nPublic line 2' }
+    4463260098: { title: 'Designer II', company: 'Beta', location: 'London', about: 'Public line 1\nPublic line 2' },
+    4463260099: { title: 'Data Engineer', company: 'Gamma', location: 'Berlin', about: 'Page two job' }
   }[id];
   const nodes = {
     '.top-card-layout__title': fields.title,
@@ -64,7 +66,7 @@ function detailDocument(html) {
   };
 }
 
-function contentFixture({ fetch } = {}) {
+function contentFixture({ fetch, paginated = false } = {}) {
   const duplicate = element('div', { componentkey: 'job-card-component-ref-4463260097' }, '', [
     element('span', {}, 'Nested duplicate')
   ]);
@@ -92,7 +94,33 @@ function contentFixture({ fetch } = {}) {
   const about = element('section', { id: 'JobDetails_AboutTheJob_4463260097' }, '', [
     element('div', { 'data-testid': 'expandable-text-box' }, 'Line 1, "quoted"\nLine 2')
   ]);
-  const body = element('body', {}, '', [first, second, invalid, about]);
+  const third = element('article', {}, '', [
+    element('div', { componentkey: 'job-card-component-ref-4463260099' }, '', [
+      element('a', { href: '/jobs/view/4463260099/' }, '', [element('h3', {}, 'Data Engineer')])
+    ])
+  ]);
+  const secondAgain = element('article', {}, '', [
+    element('div', { componentkey: 'job-card-component-ref-4463260098' }, '', [
+      element('a', { href: '/jobs/view/4463260098/' }, '', [element('h4', {}, 'Designer')])
+    ])
+  ]);
+  // Two result pages; page 2 repeats one job from page 1.
+  const pageCards = { 1: [first, second, invalid], 2: [third, secondAgain] };
+  let page = 1;
+  let pagination = [];
+  const body = element('body', {}, '', []);
+  function showPage(next) {
+    page = next;
+    const pageButton = n => element('button', {
+      'aria-label': `Page ${n}`, ...(n === page ? { 'aria-current': 'true' } : {})
+    }, String(n), [], () => showPage(n));
+    const nextButton = element('button', { 'aria-label': 'View next page' }, 'Next', [], () => showPage(page + 1));
+    nextButton.disabled = page === 2;
+    pagination = paginated ? [element('div', {}, '', [pageButton(1), pageButton(2), nextButton])] : [];
+    body.children = [...pageCards[page], about, ...pagination];
+    for (const child of body.children) child.parentElement = body;
+  }
+  showPage(1);
   const document = {
     body,
     querySelectorAll: selector => body.querySelectorAll(selector),
@@ -103,7 +131,7 @@ function contentFixture({ fetch } = {}) {
   let listenerCount = 0;
   let scrolls = 0;
   let navigations = 0;
-  let fetchCalls = 0;
+  let clock = 0;
   const location = { href: 'https://www.linkedin.com/jobs/search/', origin: 'https://www.linkedin.com' };
   const window = {
     __ljcInjected: true, // Simulate a content script left by an older extension build.
@@ -121,6 +149,8 @@ function contentFixture({ fetch } = {}) {
     MutationObserver: class { observe() {} },
     setTimeout() {}, clearTimeout,
     AbortController, fetch,
+    // Page-load polling reads the clock; advance it so settling is instant.
+    Date: { now: () => (clock += 500) },
     DOMParser: class { parseFromString(html) { return detailDocument(html); } }
   };
   const script = fs.readFileSync(path.join(root, 'content.js'), 'utf8');
@@ -128,7 +158,7 @@ function contentFixture({ fetch } = {}) {
   vm.runInNewContext(script, context);
   // Button-injection timers stay inert; detail backoff and timeouts run fast.
   context.setTimeout = (callback, ms) => ms === 10000 ? setTimeout(callback, 20) : setImmediate(callback);
-  const send = action => { let response; listener({ action }, null, value => { response = value; }); return response; };
+  const send = (action, extra) => { let response; listener({ action, ...extra }, null, value => { response = value; }); return response; };
   return {
     send,
     async waitForBulk() {
@@ -145,6 +175,7 @@ function contentFixture({ fetch } = {}) {
       return response.jobs;
     },
     removeFirstCard() { body.children = body.children.filter(child => child !== first); },
+    page: () => page,
     listenerCount: () => listenerCount,
     effects: () => ({ scrolls, navigations })
   };
@@ -186,7 +217,7 @@ test('bulk extraction fills card data from each job detail page, retrying rate l
   });
   const started = fixture.send('startBulkExtractV2');
   assert.equal(started.state, 'running');
-  assert.equal(started.total, 2);
+  await new Promise(setImmediate);
   assert.equal(fixture.send('startBulkExtractV2').total, 2, 'a second start joins the running extraction');
   const status = await fixture.waitForBulk();
   assert.equal(status.state, 'done');
@@ -229,12 +260,40 @@ test('bulk extraction can be stopped and times out hung requests', async () => {
   assert.equal(cancelled.jobs.length, 2);
 });
 
-test('popup extracts only on click, shows progress, and exports escaped six-column CSV', async () => {
+test('page-range extraction clicks through each page and stops at the last one', async () => {
+  const fetched = [];
+  const fixture = contentFixture({
+    paginated: true,
+    fetch: async url => {
+      const id = url.match(/(\d+)$/)[1];
+      fetched.push(id);
+      return { ok: true, status: 200, text: async () => id };
+    }
+  });
+  assert.equal(fixture.send('pageInfoV2').currentPage, 1);
+  fixture.send('startBulkExtractV2', { fromPage: 1, toPage: 3 });
+  const status = await fixture.waitForBulk();
+  assert.equal(status.state, 'done');
+  assert.equal(fixture.page(), 2);
+  assert.equal(status.lastPage, 2);
+  assert.equal(status.notice, 'Page 3 is not available');
+  assert.deepEqual([...status.jobs].map(job => job.jobId), ['4463260097', '4463260098', '4463260099']);
+  assert.deepEqual(fetched, ['4463260097', '4463260098', '4463260099'], 'repeated jobs are fetched once');
+  assert.equal(status.jobs[2].title, 'Data Engineer');
+
+  fixture.send('startBulkExtractV2', { fromPage: 1, toPage: 1 });
+  const back = await fixture.waitForBulk();
+  assert.equal(fixture.page(), 1, 'navigates back to the first requested page');
+  assert.deepEqual([...back.jobs].map(job => job.jobId), ['4463260097', '4463260098']);
+  assert.equal(back.notice, '');
+});
+
+test('popup extracts the entered page range, shows progress, and exports escaped six-column CSV', async () => {
   const jobs = contentFixture().extract();
   jobs[1].aboutTheJob = 'Public line 1\nPublic line 2';
   const ids = [
-    'statusDot', 'notLinkedIn', 'mainContent', 'currentJobCard', 'copyCurrentBtn',
-    'copyMinimalBtn', 'scrapeListBtn', 'jobList', 'jobListState',
+    'statusDot', 'notLinkedIn', 'mainContent', 'pageRangeForm', 'fromPageInput',
+    'toPageInput', 'scrapeListBtn', 'jobList', 'jobListState',
     'extractionResult', 'listActions', 'copyAllBtn', 'exportCsvBtn', 'extensionVersion'
   ];
   const elements = Object.fromEntries(ids.map(id => [id, {
@@ -242,7 +301,8 @@ test('popup extracts only on click, shows progress, and exports escaped six-colu
     addEventListener(type, callback) { this.listeners[type] = callback; },
     querySelector() { return { addEventListener() {} }; },
     appendChild(child) { this.children.push(child); },
-    click() { return this.listeners.click?.(); }
+    click() { return this.listeners.click?.(); },
+    submit() { return this.listeners.submit?.({ preventDefault() {} }); }
   }]));
   let domReady;
   let downloaded;
@@ -267,14 +327,20 @@ test('popup extracts only on click, shows progress, and exports escaped six-colu
       sendMessage(_id, message, callback) {
         messages.push(message.action);
         const copy = () => JSON.parse(JSON.stringify(jobs));
+        const range = { fromPage: 2, toPage: 4 };
+        if (message.action === 'pageInfoV2') return callback({ currentPage: 2 });
         if (message.action === 'startBulkExtractV2') {
+          assert.deepEqual([message.fromPage, message.toPage], [2, 3]);
           bulkState = 'running';
-          return callback({ state: 'running', done: 0, total: 2, jobs: copy(), failures: [] });
+          return callback({ state: 'running', phase: 'details', done: 0, total: 2, jobs: copy(), failures: [], ...range, page: 2 });
         }
         if (message.action === 'bulkStatusV2') {
           if (bulkState === 'idle') return callback({ state: 'idle' });
           progressSeen.push(elements.extractionResult.textContent);
-          return callback({ state: 'done', done: 2, total: 2, jobs: copy(), failures: ['4463260098: HTTP 429'] });
+          return callback({
+            state: 'done', done: 2, total: 2, jobs: copy(), failures: ['4463260098: HTTP 429'],
+            ...range, page: 3, lastPage: 3, notice: 'Page 4 is not available'
+          });
         }
         callback({ title: 'N/A' });
       },
@@ -296,14 +362,18 @@ test('popup extracts only on click, shows progress, and exports escaped six-colu
   await domReady();
   await new Promise(setImmediate);
   assert.equal(elements.extensionVersion.textContent, 'v1.1.0');
-  assert.deepEqual(messages.sort(), ['bulkStatusV2', 'scrapeCurrentJobV2']);
+  assert.deepEqual(messages.sort(), ['bulkStatusV2', 'pageInfoV2']);
+  assert.deepEqual([elements.fromPageInput.value, elements.toPageInput.value], ['2', '2']);
   messages.length = 0;
-  await elements.scrapeListBtn.click();
+  elements.toPageInput.value = '3';
+  await elements.pageRangeForm.submit();
   assert.deepEqual(messages, ['startBulkExtractV2', 'bulkStatusV2']);
-  assert.deepEqual(progressSeen, ['Found 2 jobs. Reading details 0/2…']);
+  assert.deepEqual(progressSeen, ['Page 2 of 2–4: reading details 0/2… (2 jobs found)']);
   assert.equal(elements.extractionResult.textContent,
-    'Extracted 2 unique jobs, 2 with job descriptions. 1 could not be read (4463260098: HTTP 429).');
-  assert.equal(elements.scrapeListBtn.textContent, 'Extract Visible Jobs');
+    'Extracted 2 unique jobs from pages 2–3, 2 with job descriptions. Page 4 is not available.'
+    + ' 1 could not be read (4463260098: HTTP 429).');
+  assert.equal(elements.scrapeListBtn.textContent, 'Extract Jobs');
+  assert.equal(elements.fromPageInput.disabled, false);
   assert.deepEqual({ scrolls, navigations, fetchCalls }, { scrolls: 0, navigations: 0, fetchCalls: 0 });
 
   elements.exportCsvBtn.click();
@@ -313,8 +383,13 @@ test('popup extracts only on click, shows progress, and exports escaped six-colu
     '"4463260098","Designer","Beta Ltd","Remote","https://www.linkedin.com/jobs/view/4463260098/","Public line 1\nPublic line 2"'
   ].join('\r\n'));
 
+  elements.toPageInput.value = '1';
+  await elements.pageRangeForm.submit();
+  assert.equal(elements.extractionResult.textContent, 'Enter a valid page range, e.g. 1 to 5.');
+
   injectionShouldFail = true;
-  await elements.scrapeListBtn.click();
+  elements.toPageInput.value = '3';
+  await elements.pageRangeForm.submit();
   assert.equal(elements.jobListState.textContent,
     'Error extracting jobs: Content script injection failed: site access denied');
 });

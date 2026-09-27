@@ -5,9 +5,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const statusDot      = $('statusDot');
   const notLinkedIn    = $('notLinkedIn');
   const mainContent    = $('mainContent');
-  const currentCard    = $('currentJobCard');
-  const copyCurrentBtn = $('copyCurrentBtn');
-  const copyMinimalBtn = $('copyMinimalBtn');
+  const pageRangeForm  = $('pageRangeForm');
+  const fromPageInput  = $('fromPageInput');
+  const toPageInput    = $('toPageInput');
   const scrapeListBtn  = $('scrapeListBtn');
   const jobList        = $('jobList');
   const jobListState   = $('jobListState');
@@ -17,7 +17,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const exportCsvBtn   = $('exportCsvBtn');
   $('extensionVersion').textContent = `v${chrome.runtime.getManifest().version}`;
 
-  let currentJob   = null;
   let scrapedJobs  = [];
 
   // ─── Get active tab ────────────────────────────────────────────────────────
@@ -31,76 +30,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
 
-  mainContent.hidden = false;
+  mainContent.hidden    = false;
+  statusDot.textContent = 'ready';
+  statusDot.className   = 'status-dot status-dot--ready';
 
-  loadCurrentJob();
+  loadCurrentPage();
   resumeBulk();
 
-  // ─── Load current job ──────────────────────────────────────────────────────
-  async function loadCurrentJob() {
+  async function loadCurrentPage() {
     try {
-      const resp = await sendToPage({ action: 'scrapeCurrentJobV2' });
-      if (resp && resp.title && resp.title !== 'N/A') {
-        currentJob = resp;
-        renderCurrentJob(resp);
-        statusDot.textContent   = 'ready';
-        statusDot.className     = 'status-dot status-dot--ready';
-        copyCurrentBtn.disabled = false;
-        copyMinimalBtn.disabled = false;
-      } else {
-        currentCard.innerHTML   = `<p class="job-card__loading" style="color:#8b949e">No job selected — click a job listing first.</p>`;
-        statusDot.textContent   = 'no job selected';
-        statusDot.className     = 'status-dot status-dot--not-job';
-      }
-    } catch (e) {
-      currentCard.textContent = `Could not read page: ${e.message}`;
-    }
+      const { currentPage } = await sendToPage({ action: 'pageInfoV2' });
+      if (currentPage > 0 && !following) fromPageInput.value = toPageInput.value = String(currentPage);
+    } catch (_) {}
   }
 
-  // ─── Render current job card ───────────────────────────────────────────────
-  function renderCurrentJob(job) {
-    const preview = job.description
-      ? job.description.slice(0, 200) + (job.description.length > 200 ? '…' : '')
-      : 'No description found';
-    currentCard.innerHTML = `
-      <div class="job-card__title">${escHtml(job.title)}</div>
-      <div class="job-card__company">${escHtml(job.company)}</div>
-      ${job.location ? `<div class="job-card__location">${escHtml(job.location)}</div>` : ''}
-      <div class="job-card__desc-preview">${escHtml(preview)}</div>
-    `;
-  }
-
-  // ─── Copy current job ──────────────────────────────────────────────────────
-  copyCurrentBtn.addEventListener('click', async () => {
-    if (!currentJob) return;
-    await clipboardWrite(currentJob.fullText);
-    flashBtn(copyCurrentBtn, '✓ Copied!');
-  });
-
-  copyMinimalBtn.addEventListener('click', async () => {
-    if (!currentJob) return;
-    const summary = [
-      `Title: ${currentJob.title}`,
-      `Company: ${currentJob.company}`,
-      currentJob.location ? `Location: ${currentJob.location}` : '',
-      `URL: ${currentJob.url}`
-    ].filter(Boolean).join('\n');
-    await clipboardWrite(summary);
-    flashBtn(copyMinimalBtn, '✓ Copied!');
-  });
-
-  // ─── Extract visible jobs, then read each job's details ───────────────────
+  // ─── Go through each page of results, reading each job's details ─────────
   // The run lives in the content script, so reopening the popup resumes it.
   let following = false;
 
-  scrapeListBtn.addEventListener('click', async () => {
+  pageRangeForm.addEventListener('submit', async e => {
+    e.preventDefault();
     if (following) {
       scrapeListBtn.disabled = true;
       try { await sendMessage(tab.id, { action: 'cancelBulkV2' }); } catch (_) {}
       return;
     }
+    const fromPage = Number(fromPageInput.value);
+    const toPage   = Number(toPageInput.value);
+    if (!Number.isInteger(fromPage) || !Number.isInteger(toPage) || fromPage < 1 || toPage < fromPage) {
+      extractionResult.textContent = 'Enter a valid page range, e.g. 1 to 5.';
+      extractionResult.hidden = false;
+      return;
+    }
     try {
-      await followBulk(await sendToPage({ action: 'startBulkExtractV2' }));
+      await followBulk(await sendToPage({ action: 'startBulkExtractV2', fromPage, toPage }));
     } catch (e) {
       showBulkError(e);
     }
@@ -117,10 +80,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     following = true;
     scrapeListBtn.textContent = 'Stop';
     scrapeListBtn.disabled    = false;
+    fromPageInput.disabled = toPageInput.disabled = true;
+    if (status.fromPage) {
+      fromPageInput.value = String(status.fromPage);
+      toPageInput.value   = String(status.toPage);
+    }
     extractionResult.hidden   = false;
     try {
       while (status.state === 'running') {
-        extractionResult.textContent = `Found ${status.total} jobs. Reading details ${status.done}/${status.total}…`;
+        extractionResult.textContent = progressText(status);
         await new Promise(resolve => setTimeout(resolve, 700));
         status = await withTimeout(sendMessage(tab.id, { action: 'bulkStatusV2' }), 10000, 'LinkedIn page did not respond');
       }
@@ -129,16 +97,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       showBulkError(e);
     } finally {
       following = false;
-      scrapeListBtn.textContent = 'Extract Visible Jobs';
+      scrapeListBtn.textContent = 'Extract Jobs';
       scrapeListBtn.disabled    = false;
+      fromPageInput.disabled = toPageInput.disabled = false;
     }
+  }
+
+  function progressText(status) {
+    const found = `${status.total} job${status.total === 1 ? '' : 's'} found`;
+    const where = status.fromPage ? `Page ${status.page} of ${status.fromPage}–${status.toPage}: ` : '';
+    return status.phase === 'loading'
+      ? `${where}loading… ${found} so far.`
+      : `${where}reading details ${status.done}/${status.total}… (${found})`;
   }
 
   function showBulkResult(status) {
     scrapedJobs = status.jobs || [];
     const descriptions = scrapedJobs.filter(job => job.aboutTheJob).length;
     const failures = status.failures || [];
-    extractionResult.textContent = `Extracted ${scrapedJobs.length} unique jobs, ${descriptions} with job descriptions.`
+    const pages = !status.lastPage ? ''
+      : status.lastPage === status.fromPage ? ` from page ${status.lastPage}`
+      : ` from pages ${status.fromPage}–${status.lastPage}`;
+    extractionResult.textContent = `Extracted ${scrapedJobs.length} unique jobs${pages}, ${descriptions} with job descriptions.`
+      + (status.notice ? ` ${status.notice}.` : '')
       + (status.state === 'cancelled' ? ' Stopped early.' : '')
       + (failures.length ? ` ${failures.length} could not be read (${failures[0]}).` : '');
     extractionResult.hidden = false;

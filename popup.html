@@ -28,35 +28,22 @@
 
     <!-- Main content (shown when on LinkedIn) -->
     <div id="mainContent" hidden>
-      <!-- Current Job Section -->
-      <section class="section">
-        <div class="section__head">
-          <span class="section__label">Current Job</span>
-        </div>
-        <div id="currentJobCard" class="job-card job-card--current">
-          <p class="job-card__loading">Loading job details…</p>
-        </div>
-        <div class="btn-row">
-          <button id="copyCurrentBtn" class="btn btn--primary" disabled>
-            📋 Copy Job Description
-          </button>
-          <button id="copyMinimalBtn" class="btn btn--ghost" disabled title="Copy title, company, location & URL only">
-            Copy Summary
-          </button>
-        </div>
-      </section>
-
-      <div class="divider"></div>
-
       <!-- Job List Section -->
       <section class="section">
         <div class="section__head">
-          <span class="section__label">Jobs on This Page</span>
-          <button id="scrapeListBtn" class="btn btn--sm btn--outline">Extract Visible Jobs</button>
+          <span class="section__label">Jobs by Page</span>
         </div>
 
+        <form id="pageRangeForm" class="page-range">
+          <label for="fromPageInput">Pages</label>
+          <input id="fromPageInput" type="number" min="1" max="100" step="1" value="1" required />
+          <span>to</span>
+          <input id="toPageInput" type="number" min="1" max="100" step="1" value="1" required />
+          <button id="scrapeListBtn" type="submit" class="btn btn--sm btn--primary">Extract Jobs</button>
+        </form>
+
         <div id="jobListState" class="list-empty">
-          <p>Wait for the jobs you want to appear, then click Extract Visible Jobs.</p>
+          <p>Enter the pages of search results to go through, then click Extract Jobs.</p>
         </div>
         <p id="extractionResult" class="list-empty" role="status" aria-live="polite" hidden></p>
 

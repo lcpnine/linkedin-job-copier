@@ -10,7 +10,7 @@ A browser extension that adds a **"Copy Job Description"** button to LinkedIn jo
 
 - **📋 Copy Job Description** — One-click copy of the full job description (title, company, location, URL + description) to clipboard, formatted cleanly for sharing with people or LLMs
 - **Copy Summary** — Copies just the title, company, location & URL (no description)
-- **Extract Visible Jobs** — Extracts unique job cards already rendered on a LinkedIn jobs search page
+- **Extract Jobs by Page** — Enter a page range (e.g. pages 1 to 5) and the extension clicks through each page of LinkedIn search results, extracting the jobs page by page
 - **Copy All as Text** — Copies the entire scraped list as formatted text
 - **⬇ Export CSV** — Downloads all scraped jobs as a `.csv` file
 
@@ -43,15 +43,10 @@ A browser extension that adds a **"Copy Job Description"** button to LinkedIn jo
 3. A **"📋 Copy Job Description"** button will appear below the Apply button
 4. Click it → the full job description is now in your clipboard!
 
-OR:
-1. Click the extension icon in your toolbar
-2. The popup shows the currently selected job
-3. Click **"Copy Job Description"** or **"Copy Summary"**
-
-### Extract Visible Jobs on a Search Page
+### Extract Jobs Across Several Pages
 1. Go to LinkedIn Jobs search results (`linkedin.com/jobs/search/...`)
-2. Click the extension icon
-3. Wait for the jobs you want to render, then click **"Extract Visible Jobs"**
+2. Click the extension icon. The page fields start at the page you're on.
+3. Enter the pages to go through (e.g. **Pages 1 to 5**), then click **"Extract Jobs"**
 4. Click **"Copy All as Text"** or **"⬇ Export CSV"**
 
 ---
@@ -75,7 +70,7 @@ This extension uses the standard **WebExtensions API (Manifest V3)** which is su
 
 ## ⚠️ Notes
 
-- Bulk extraction collects the job IDs of the cards currently in the DOM, then reads each job's title, company, location and full description from LinkedIn's public job-posting page (`/jobs-guest/jobs/api/jobPosting/{JOB_ID}`), 3 at a time. It does not scroll, paginate, or discover additional jobs. Progress continues if you close the popup; reopen it to see the result, or press **Stop**. Jobs that can't be read (for example when LinkedIn rate-limits) keep whatever the card showed.
+- Page-range extraction moves between pages by clicking LinkedIn's own pagination buttons (the **Page N** button, or **Next**/**Previous**), waits for the result list to change, and collects the job IDs of the cards on each page. It then reads each new job's title, company, location and full description from LinkedIn's public job-posting page (`/jobs-guest/jobs/api/jobPosting/{JOB_ID}`), 3 at a time, before moving to the next page. Jobs repeated across pages are kept once. If a requested page doesn't exist, it stops there and keeps what it has. It does not scroll the list, so only cards LinkedIn has rendered are collected. Progress continues if you close the popup; reopen it to see the result, or press **Stop**. Jobs that can't be read (for example when LinkedIn rate-limits) keep whatever the card showed.
 - The CSV columns are `jobId,title,company,location,jobUrl,aboutTheJob`.
 - LinkedIn periodically updates its page structure. If extraction breaks, the structural selectors in `content.js` may need updating.
 - The extension only activates on `linkedin.com/jobs/*` pages.

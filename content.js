@@ -229,20 +229,11 @@
 
   // ─── Message listener ──────────────────────────────────────────────────────
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.action === 'scrapeCurrentJobV2') {
-      sendResponse({
-        title:       findJobTitleEl()?.innerText?.trim()                || 'N/A',
-        company:     findCompanyEl()?.innerText?.trim()                 || 'N/A',
-        location:    queryFirst(LOCATION_SELECTORS)?.innerText?.trim() || 'N/A',
-        url:         window.location.href,
-        description: extractDescription() || '',
-        fullText:    buildClipboardText()
-      });
-    }
     if (msg.action === 'scrapeJobCardsV2') {
       sendResponse({ jobs: scrapeJobList() });
     }
-    if (msg.action === 'startBulkExtractV2') sendResponse(startBulkExtract());
+    if (msg.action === 'pageInfoV2') sendResponse({ currentPage: currentPage() });
+    if (msg.action === 'startBulkExtractV2') sendResponse(startBulkExtract(msg.fromPage, msg.toPage));
     if (msg.action === 'bulkStatusV2') sendResponse(bulkStatus());
     if (msg.action === 'cancelBulkV2') {
       if (bulkRun?.state === 'running') bulkRun.state = 'cancelled';
@@ -348,6 +339,73 @@
     } catch { return ''; }
   }
 
+  // ─── Search result pages ───────────────────────────────────────────────────
+  // Pages are changed by clicking LinkedIn's own pagination buttons, which
+  // swaps the result list in place and keeps this script (and the run) alive.
+  const PAGE_LOAD_TIMEOUT_MS = 15000;
+  const PAGE_SETTLE_MS       = 1200;
+  const PAGE_POLL_MS         = 250;
+
+  function pageButtons() {
+    return [...document.querySelectorAll('button[aria-label^="Page "]')]
+      .map(button => ({ button, page: Number(/^Page (\d+)$/.exec(button.getAttribute('aria-label') || '')?.[1]) }))
+      .filter(entry => entry.page > 0);
+  }
+
+  function currentPage() {
+    const active = pageButtons().find(({ button }) =>
+      ['true', 'page'].includes(button.getAttribute('aria-current'))
+      || /(^|\s|-)(active|selected)(\s|$)/.test(`${button.className || ''} ${button.parentElement?.className || ''}`));
+    if (active) return active.page;
+    const start = Number(new URL(location.href).searchParams.get('start'));
+    return start > 0 ? Math.floor(start / 25) + 1 : 1;
+  }
+
+  function stepButton(direction) {
+    const label = direction === 'next' ? /^(view )?next( page)?$/i : /^(view )?previous( page)?$/i;
+    return [...document.querySelectorAll('button')].find(button =>
+      label.test((button.getAttribute('aria-label') || button.innerText || '').trim())) || null;
+  }
+
+  function cardIdsKey() {
+    return scrapeJobList().map(job => job.jobId).join(',');
+  }
+
+  async function goToPage(target, run) {
+    // Each click moves at least one page, so this bounds the number of hops.
+    for (let hops = 0; hops <= target + 100; hops++) {
+      const page = currentPage();
+      if (page === target) return;
+      const button = pageButtons().find(entry => entry.page === target)?.button
+        || stepButton(page < target ? 'next' : 'previous');
+      if (!button || button.disabled || button.getAttribute('aria-disabled') === 'true') {
+        throw new Error(`Page ${target} is not available`);
+      }
+      const before = cardIdsKey();
+      button.click();
+      await waitForNewCards(before, run);
+      if (run.state !== 'running') return;
+    }
+    throw new Error(`Could not reach page ${target}`);
+  }
+
+  // Wait until the result list shows different jobs, then until it stops changing.
+  async function waitForNewCards(before, run) {
+    const deadline = Date.now() + PAGE_LOAD_TIMEOUT_MS;
+    let key = before;
+    let stableSince = 0;
+    while (run.state === 'running') {
+      await new Promise(resolve => setTimeout(resolve, PAGE_POLL_MS));
+      const now = cardIdsKey();
+      if (now !== key) { key = now; stableSince = Date.now(); }
+      if (key && key !== before && Date.now() - stableSince >= PAGE_SETTLE_MS) return;
+      if (Date.now() > deadline) {
+        if (key && key !== before) return;
+        throw new Error('Next page of jobs did not load');
+      }
+    }
+  }
+
   // ─── Bulk job details ──────────────────────────────────────────────────────
   // Search-result cards often lack readable text, so each job's title, company,
   // location and description come from LinkedIn's public job-posting endpoint.
@@ -360,23 +418,55 @@
 
   function bulkStatus() {
     if (!bulkRun) return { state: 'idle' };
-    const { state, done, jobs, failures } = bulkRun;
-    return { state, done, total: jobs.length, jobs, failures: [...failures] };
+    const { state, phase, done, jobs, failures, fromPage, toPage, page, lastPage, notice } = bulkRun;
+    return {
+      state, phase, done, total: jobs.length, jobs, failures: [...failures],
+      fromPage, toPage, page, lastPage, notice
+    };
   }
 
-  function startBulkExtract() {
+  // Without a page range, only the jobs already on screen are read.
+  function startBulkExtract(fromPage, toPage) {
     if (bulkRun?.state === 'running') return bulkStatus();
-    const run = { state: 'running', done: 0, jobs: scrapeJobList(), failures: [] };
+    const ranged = Number.isInteger(fromPage) && Number.isInteger(toPage) && fromPage >= 1 && toPage >= fromPage;
+    const run = {
+      state: 'running', phase: 'loading', done: 0, jobs: [], failures: [],
+      fromPage: ranged ? fromPage : null, toPage: ranged ? toPage : null,
+      page: ranged ? fromPage : null, lastPage: null, notice: ''
+    };
     bulkRun = run;
-    fillJobDetails(run).then(() => { if (run.state === 'running') run.state = 'done'; });
+    extractPages(run).then(() => { if (run.state === 'running') run.state = 'done'; });
     return bulkStatus();
   }
 
-  async function fillJobDetails(run) {
+  async function extractPages(run) {
+    const pages = run.fromPage ? run.toPage - run.fromPage + 1 : 1;
+    for (let i = 0; i < pages && run.state === 'running'; i++) {
+      if (run.fromPage) {
+        run.page  = run.fromPage + i;
+        run.phase = 'loading';
+        try {
+          await goToPage(run.page, run);
+        } catch (error) {
+          if (run.state === 'running') run.notice = error.message;
+          return;
+        }
+        if (run.state !== 'running') return;
+      }
+      const seen = new Set(run.jobs.map(job => job.jobId));
+      const fresh = scrapeJobList().filter(job => !seen.has(job.jobId));
+      run.jobs.push(...fresh);
+      run.lastPage = run.page;
+      run.phase = 'details';
+      await fillJobDetails(run, fresh);
+    }
+  }
+
+  async function fillJobDetails(run, jobs) {
     let next = 0;
     async function worker() {
-      while (run.state === 'running' && next < run.jobs.length) {
-        const job = run.jobs[next++];
+      while (run.state === 'running' && next < jobs.length) {
+        const job = jobs[next++];
         try {
           const fields = await fetchJobDetails(job.jobId, run);
           job.title    = fields.title    || job.title;
@@ -389,7 +479,7 @@
         run.done++;
       }
     }
-    await Promise.all(Array.from({ length: Math.min(DETAIL_CONCURRENCY, run.jobs.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(DETAIL_CONCURRENCY, jobs.length) }, worker));
   }
 
   async function fetchJobDetails(jobId, run) {
