@@ -3,7 +3,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const $ = id => document.getElementById(id);
 
   const statusDot      = $('statusDot');
-  const notLinkedIn    = $('notLinkedIn');
+  const goToSearch     = $('goToSearch');
+  const goToSearchBtns = [$('goToPreferencesBtn'), $('goToProfileBtn')];
   const mainContent    = $('mainContent');
   const pageRangeForm  = $('pageRangeForm');
   const fromPageInput  = $('fromPageInput');
@@ -19,14 +20,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let scrapedJobs  = [];
 
+  const SEARCH_RESULTS_URL = 'https://www.linkedin.com/jobs/search-results';
+  const JOBS_HOME_URL      = 'https://www.linkedin.com/jobs/';
+
   // ─── Get active tab ────────────────────────────────────────────────────────
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const isLinkedIn = tab?.url?.includes('linkedin.com/jobs');
+  const isSearchResults = tab?.url?.startsWith(SEARCH_RESULTS_URL);
 
-  if (!isLinkedIn) {
-    statusDot.textContent = 'not on LinkedIn Jobs';
+  if (!isSearchResults) {
+    statusDot.textContent = 'not on job search results';
     statusDot.className   = 'status-dot status-dot--not-job';
-    notLinkedIn.hidden    = false;
+    goToSearch.hidden     = false;
+    for (const btn of goToSearchBtns) btn.addEventListener('click', () => openJobSearch(btn.dataset.section));
     return;
   }
 
@@ -36,6 +41,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   loadCurrentPage();
   resumeBulk();
+
+  // ─── Jobs home → section's "Show all" → search results ───────────────────
+  // The content script on /jobs/ sees this request and clicks that section's
+  // "Show all", which opens search-results with LinkedIn's own query.
+  async function openJobSearch(section) {
+    for (const btn of goToSearchBtns) btn.disabled = true;
+    await chrome.storage.local.set({ showAllRequest: { section, at: Date.now() } });
+    if (tab?.url?.startsWith('https://www.linkedin.com/')) {
+      await chrome.tabs.update(tab.id, { url: JOBS_HOME_URL });
+    } else {
+      await chrome.tabs.create({ url: JOBS_HOME_URL });
+    }
+    window.close();
+  }
 
   async function loadCurrentPage() {
     try {

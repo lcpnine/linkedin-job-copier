@@ -292,7 +292,7 @@ test('popup extracts the entered page range, shows progress, and exports escaped
   const jobs = contentFixture().extract();
   jobs[1].aboutTheJob = 'Public line 1\nPublic line 2';
   const ids = [
-    'statusDot', 'notLinkedIn', 'mainContent', 'pageRangeForm', 'fromPageInput',
+    'statusDot', 'goToSearch', 'goToPreferencesBtn', 'goToProfileBtn', 'mainContent', 'pageRangeForm', 'fromPageInput',
     'toPageInput', 'scrapeListBtn', 'jobList', 'jobListState',
     'extractionResult', 'listActions', 'copyAllBtn', 'exportCsvBtn', 'extensionVersion'
   ];
@@ -323,7 +323,7 @@ test('popup extracts the entered page range, shows progress, and exports escaped
   };
   const chrome = {
     tabs: {
-      query: async () => [{ id: 7, url: 'https://www.linkedin.com/jobs/search/' }],
+      query: async () => [{ id: 7, url: 'https://www.linkedin.com/jobs/search-results/?keywords=engineer' }],
       sendMessage(_id, message, callback) {
         messages.push(message.action);
         const copy = () => JSON.parse(JSON.stringify(jobs));
@@ -392,4 +392,140 @@ test('popup extracts the entered page range, shows progress, and exports escaped
   await elements.pageRangeForm.submit();
   assert.equal(elements.jobListState.textContent,
     'Error extracting jobs: Content script injection failed: site access denied');
+});
+
+// Minimal DOM tree for the /jobs/ home page: tag, text, attrs, children.
+function homeNode(tag, text = '', attrs = {}, children = []) {
+  const node = {
+    tag, attrs, children, parentElement: null,
+    get textContent() { return text || children.map(child => child.textContent).join(''); },
+    getAttribute: name => attrs[name] ?? null,
+    contains(other) { return children.some(child => child === other || child.contains(other)); },
+    descendants() { return children.flatMap(child => [child, ...child.descendants()]); },
+    querySelectorAll(selector) {
+      if (selector === 'h2') return node.descendants().filter(el => el.tag === 'h2');
+      assert.equal(selector, 'a, button, [role="link"], [role="button"], span');
+      return node.descendants().filter(el => ['a', 'button', 'span'].includes(el.tag));
+    },
+    closest(selector) {
+      assert.equal(selector, 'a, button, [role="link"], [role="button"]');
+      for (let el = node; el; el = el.parentElement) if (el.tag === 'a' || el.tag === 'button') return el;
+      return null;
+    },
+    click() { homeNode.clicked = node; }
+  };
+  for (const child of children) child.parentElement = node;
+  return node;
+}
+
+// LinkedIn's markup: <a href><span><svg/><span>Show all</span></span></a>
+const showAll = (href, attrs = {}) =>
+  homeNode('a', '', { href, ...attrs }, [homeNode('span', '', {}, [homeNode('span', 'Show all')])]);
+
+function jobsHomePage(section, sections) {
+  homeNode.clicked = null;
+  const body = homeNode('body', '', {}, sections);
+  const store = { showAllRequest: { section, at: 1000 } };
+  const chrome = {
+    runtime: { onMessage: { addListener() {} } },
+    storage: { local: {
+      get: async key => ({ [key]: store[key] }),
+      remove: async key => { delete store[key]; }
+    } }
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'content.js'), 'utf8'), {
+    document: { body, querySelectorAll: selector => body.querySelectorAll(selector) },
+    window: { addEventListener() {} }, chrome, URL,
+    location: { href: 'https://www.linkedin.com/jobs/', pathname: '/jobs/' },
+    history: { pushState() {}, replaceState() {} },
+    MutationObserver: class { observe() {} },
+    setTimeout() {}, clearTimeout, Date: { now: () => 5000 }
+  });
+  return store;
+}
+
+function jobsHomeSections() {
+  const prefsLink = showAll('https://www.linkedin.com/jobs/search-results/?keywords=Software+Engineer&origin=JobSearchOrigin_PREFERENCES_LANDING&originToLandingJobPostings=1,2');
+  const profileLink = showAll('https://www.linkedin.com/jobs/search-results/?keywords=AI+engineer&origin=JobSearchOrigin_QUALIFICATION_LANDING&originToLandingJobPostings=3,4',
+    { 'aria-label': 'Show all jobs that match your profile' });
+  const card = homeNode('a', 'Senior AI Engineer', {
+    href: 'https://www.linkedin.com/jobs/search-results/?currentJobId=3&origin=QUALIFICATION_LANDING'
+  });
+  const prefs = homeNode('div', '', {}, [homeNode('h2', 'Jobs based on your preferences'), prefsLink]);
+  const profile = homeNode('div', '', {}, [homeNode('h2', 'Jobs that match your profile'), card, profileLink]);
+  return { prefs, profile, prefsLink, profileLink };
+}
+
+test('content script on /jobs/ clicks the requested section\'s "Show all", once', async () => {
+  for (const [section, expected] of [['preferences', 'prefsLink'], ['profile', 'profileLink']]) {
+    const page = jobsHomeSections();
+    const store = jobsHomePage(section, [page.prefs, page.profile]);
+    await new Promise(setImmediate);
+    assert.equal(homeNode.clicked, page[expected], section);
+    assert.deepEqual(store, {});
+  }
+});
+
+test('content script finds "Show all" under the section heading when the link has no origin', async () => {
+  const bare = homeNode('span', '', {}, [homeNode('span', 'Show all')]);
+  const other = showAll('/jobs/search-results/?origin=JobSearchOrigin_PREFERENCES_LANDING');
+  jobsHomePage('profile', [
+    homeNode('div', '', {}, [homeNode('h2', 'Jobs based on your preferences'), other]),
+    homeNode('div', '', {}, [homeNode('h2', 'Jobs that match your profile'), bare])
+  ]);
+  await new Promise(setImmediate);
+  assert.equal(homeNode.clicked, bare);
+
+  // A missing section never falls through to the other section's button.
+  jobsHomePage('profile', [homeNode('div', '', {}, [homeNode('h2', 'Jobs based on your preferences'), other])]);
+  await new Promise(setImmediate);
+  assert.equal(homeNode.clicked, null);
+});
+
+test('popup off search-results shows only the two section buttons, which open /jobs/', async () => {
+  const ids = ['statusDot', 'goToSearch', 'goToPreferencesBtn', 'goToProfileBtn', 'mainContent', 'extensionVersion'];
+  const elements = Object.fromEntries(ids.map(id => [id, {
+    hidden: true, textContent: '', listeners: {},
+    dataset: { section: { goToPreferencesBtn: 'preferences', goToProfileBtn: 'profile' }[id] },
+    addEventListener(type, callback) { this.listeners[type] = callback; }
+  }]));
+  let domReady;
+  let closed = false;
+  const stored = {};
+  const updates = [];
+  const created = [];
+  let tabUrl = 'https://www.linkedin.com/feed/';
+  const chrome = {
+    tabs: {
+      query: async () => [{ id: 7, url: tabUrl }],
+      update: async (id, props) => { updates.push([id, props.url]); },
+      create: async props => { created.push(props.url); }
+    },
+    storage: { local: { set: async values => Object.assign(stored, values) } },
+    runtime: { getManifest: () => ({ version: '1.1.0' }) }
+  };
+  const run = async () => {
+    vm.runInNewContext(fs.readFileSync(path.join(root, 'popup.js'), 'utf8'), {
+      document: {
+        addEventListener(type, callback) { if (type === 'DOMContentLoaded') domReady = callback; },
+        getElementById: id => elements[id] || { addEventListener() {} }
+      },
+      chrome, window: { close() { closed = true; } }, Date: { now: () => 42 }
+    });
+    await domReady();
+  };
+
+  await run();
+  assert.equal(elements.goToSearch.hidden, false);
+  assert.equal(elements.mainContent.hidden, true);
+  await elements.goToProfileBtn.listeners.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(stored)), { showAllRequest: { section: 'profile', at: 42 } });
+  assert.deepEqual(updates, [[7, 'https://www.linkedin.com/jobs/']]);
+  assert.equal(closed, true);
+
+  tabUrl = 'https://example.com/';
+  await run();
+  await elements.goToPreferencesBtn.listeners.click();
+  assert.deepEqual(JSON.parse(JSON.stringify(stored)), { showAllRequest: { section: 'preferences', at: 42 } });
+  assert.deepEqual(created, ['https://www.linkedin.com/jobs/']);
 });

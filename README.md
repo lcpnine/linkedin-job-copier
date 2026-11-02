@@ -44,8 +44,8 @@ A browser extension that adds a **"Copy Job Description"** button to LinkedIn jo
 4. Click it → the full job description is now in your clipboard!
 
 ### Extract Jobs Across Several Pages
-1. Go to LinkedIn Jobs search results (`linkedin.com/jobs/search/...`)
-2. Click the extension icon. The page fields start at the page you're on.
+1. Go to LinkedIn Jobs search results (`linkedin.com/jobs/search-results/...`). If you're anywhere else, click the extension icon and pick **"Jobs based on your preferences →"** or **"Jobs that match your profile →"**: it opens `linkedin.com/jobs/` and clicks that section's **Show all** for you, which lands on search results.
+2. Click the extension icon. The page fields start at the page you're on. The extraction controls only appear on `linkedin.com/jobs/search-results` pages.
 3. Enter the pages to go through (e.g. **Pages 1 to 5**), then click **"Extract Jobs"**
 4. Click **"Copy All as Text"** or **"⬇ Export CSV"**
 

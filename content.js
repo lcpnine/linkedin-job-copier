@@ -242,6 +242,66 @@
     return true;
   });
 
+  // ─── Jobs home: click "Show all" when the popup asked for it ──────────────
+  // The popup stores a timestamp, then opens /jobs/. Clicking LinkedIn's own
+  // "Show all" link lands on /jobs/search-results with its query attached.
+  const SHOW_ALL_REQUEST_TTL = 60000;
+  const SHOW_ALL_WAIT        = 20000;
+
+  // Each /jobs/ section has its own "Show all". Its link carries the section's
+  // search origin, e.g. ...&origin=JobSearchOrigin_PREFERENCES_LANDING.
+  const SHOW_ALL_SECTIONS = {
+    preferences: { origin: 'JobSearchOrigin_PREFERENCES_LANDING', heading: /^jobs based on your preferences/i },
+    profile:     { origin: 'JobSearchOrigin_QUALIFICATION_LANDING', heading: /^jobs that match your profile/i }
+  };
+
+  async function clickShowAllIfRequested() {
+    if (!/^\/jobs\/?$/.test(location.pathname) || !chrome.storage?.local) return;
+    const { showAllRequest } = await chrome.storage.local.get('showAllRequest');
+    if (!showAllRequest || Date.now() - showAllRequest.at > SHOW_ALL_REQUEST_TTL) return;
+    await chrome.storage.local.remove('showAllRequest');
+    const section = SHOW_ALL_SECTIONS[showAllRequest.section];
+    if (!section) return;
+
+    const deadline = Date.now() + SHOW_ALL_WAIT;
+    while (Date.now() < deadline) {
+      const link = findShowAllLink(section);
+      if (link) return link.click();
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    showToast('Could not find that section\'s "Show all" button on LinkedIn Jobs.', 'error');
+  }
+
+  // "Show all" is <a href=…><span><svg/><span>Show all</span></span></a>.
+  // Match by text, then use the nearest clickable ancestor, or the span itself
+  // (its click bubbles up to whatever handler LinkedIn attached).
+  // Class names are hashed, so they are not used.
+  const CLICKABLE = 'a, button, [role="link"], [role="button"]';
+
+  function findShowAllLink({ origin, heading }) {
+    const targets = [...new Set([...document.querySelectorAll(`${CLICKABLE}, span`)]
+      .filter(el => {
+        const label = (el.getAttribute('aria-label') || el.textContent || '').trim().replace(/\s+/g, ' ');
+        return /^(show all|모두 보기)/i.test(label);
+      })
+      .map(el => el.closest(CLICKABLE) || el))];
+
+    const byOrigin = targets.find(el => (el.getAttribute('href') || '').includes(origin));
+    if (byOrigin) return byOrigin;
+
+    // Fallback: the "Show all" inside the section under the matching heading.
+    // Stop before climbing into a container that also holds another section.
+    const title = [...document.querySelectorAll('h2')].find(h => heading.test(h.textContent.trim()));
+    for (let box = title?.parentElement; box; box = box.parentElement) {
+      if (box.querySelectorAll('h2').length > 1) break;
+      const match = targets.find(el => box.contains(el));
+      if (match) return match;
+    }
+    return null;
+  }
+
+  clickShowAllIfRequested().catch(() => {});
+
   // ─── Scrape job list ───────────────────────────────────────────────────────
   function scrapeJobList() {
     const cardsById = new Map();

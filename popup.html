@@ -19,14 +19,13 @@
       </div>
     </header>
 
-    <!-- Not on LinkedIn message -->
-    <div id="notLinkedIn" class="state-msg" hidden>
-      <div class="state-msg__icon">🔗</div>
-      <p>Open a LinkedIn Jobs page to get started.</p>
-      <a href="https://www.linkedin.com/jobs/" target="_blank" class="btn btn--outline">Go to LinkedIn Jobs →</a>
+    <!-- Shown when the tab is not on job search results -->
+    <div id="goToSearch" class="state-msg" hidden>
+      <button id="goToPreferencesBtn" type="button" class="btn btn--outline" data-section="preferences">Jobs based on your preferences →</button>
+      <button id="goToProfileBtn" type="button" class="btn btn--outline" data-section="profile">Jobs that match your profile →</button>
     </div>
 
-    <!-- Main content (shown when on LinkedIn) -->
+    <!-- Main content (shown on linkedin.com/jobs/search-results) -->
     <div id="mainContent" hidden>
       <!-- Job List Section -->
       <section class="section">
